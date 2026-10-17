@@ -492,6 +492,44 @@ A built-in `default` profile is always available. It uses the default tool polic
 files and skills, and adds no profile prompt or specialist extensions. Create `profiles/default.md`
 to customize it. No web, reverse-engineering, or other specialist profile names are hardcoded.
 
+### Companion initialization before the first task
+
+A profile can load a provider extension followed by a separate initializer.
+`session_start` handlers are awaited in extension order, so the initializer must
+finish before pi-suba's child startup guard checks required tools. Deferring tool
+activation until `before_agent_start`, or merely writing a slash command in the
+profile body, is too late. Pi-suba has no arbitrary startup-command profile key.
+
+A deployed companion can live outside pi-suba's source repository. In this
+setup, `/root/.pi/agent/suba/extensions/pi-telco-rag.ts` is a profile-scoped
+standalone companion to `/w/local-rag-v1`. It uses that extension's acknowledged
+control API; it never registers a second RAG provider or changes pi-suba's runtime.
+The profile selection is:
+
+```yaml
+tools: [read, local_rag]
+extensions:
+  - /w/local-rag-v1
+  - /root/.pi/agent/suba/extensions/pi-telco-rag.ts
+```
+
+Keep both entries in this order, and keep unrelated global `childExtensions`
+empty. The companion imports `/w/local-rag-v1/rag-companion.ts` explicitly; keep
+that import aligned with the provider path if deploying elsewhere. The companion
+is not in Pi's globally discovered extensions directory: only profiles explicitly
+listing it load it. The RAG provider intentionally uses the updated `/w` source,
+not the installed package copy under `/root`. No package installation, global
+settings change, or generic RAG option in pi-suba is required.
+
+The companion selects `telco` only on an unconfigured branch, verifies the tool is
+active, and checks the corpus again before each agent run. Missing/unavailable
+corpora, protocol timeouts, or a saved conflicting/off choice stop the dedicated
+researcher rather than allowing a model run without the required corpus. Explicit
+branch choices are not overwritten. Use fresh children for the new profile and
+start a new parent session to discover added profiles; resume uses saved runtime
+snapshots. Startup selection does not request embeddings or mutate the corpus,
+but actual searches use the RAG provider's external embedding API.
+
 ### Context and skill discovery
 
 `context: "fresh"` or `"fork"` controls conversation history independently of these profile flags:
