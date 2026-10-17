@@ -3,14 +3,16 @@ import { basename, join } from "node:path"
 import { subaDirectory } from "./paths.ts"
 import YAML from "yaml"
 import { THINKING_LEVELS, type ThinkingLevel } from "./protocol.ts"
+import { parseToolNames, type ToolSelection } from "./tools.ts"
 
-export type AllowedToolPolicy = "default" | "read-only"
+export { TOOL_POLICIES, type AllowedToolPolicy, type ToolSelection } from "./tools.ts"
 export interface Profile {
   name: string
   description?: string
   model?: string
   thinking?: ThinkingLevel
-  tools: AllowedToolPolicy
+  tools: ToolSelection
+  extensions: string[]
   loadContext: boolean
   loadSkills: boolean
   systemPrompt: "append" | "replace"
@@ -22,14 +24,11 @@ export interface Profile {
 export const BUILTIN_DEFAULT_PROFILE: Profile = {
   name: "default",
   tools: "default",
+  extensions: [],
   loadContext: true,
   loadSkills: true,
   systemPrompt: "append",
   body: "",
-}
-export const TOOL_POLICIES: Record<AllowedToolPolicy, string[]> = {
-  default: ["read", "bash", "edit", "write"],
-  "read-only": ["read", "bash"],
 }
 const KEYS = new Set([
   "name",
@@ -37,6 +36,7 @@ const KEYS = new Set([
   "model",
   "thinking",
   "tools",
+  "extensions",
   "load-context",
   "load-skills",
   "system-prompt",
@@ -55,6 +55,27 @@ function scalarBoolean(value: unknown, key: string, fallback: boolean): boolean 
   return value
 }
 
+function parseTools(value: unknown): ToolSelection {
+  if (Array.isArray(value)) return parseToolNames(value)
+  const policy = scalarString(value, "tools") ?? "default"
+  if (policy === "default" || policy === "read,bash,edit,write") return "default"
+  if (policy === "read-only" || policy === "read,bash") return "read-only"
+  throw new Error(`unsupported tools policy: ${policy}; use a YAML list for exact tool names`)
+}
+
+function parseExtensions(value: unknown): string[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error("extensions must be an array")
+  const sources = value.map((entry: unknown, index) => {
+    if (typeof entry !== "string" || !entry.trim())
+      throw new Error(`extensions[${index}] must be a non-empty string`)
+    return entry.trim()
+  })
+  if (new Set(sources).size !== sources.length)
+    throw new Error("extensions must not contain duplicates")
+  return sources
+}
+
 export function parseProfile(markdown: string, fallbackName: string, source?: string): Profile {
   let data: Record<string, unknown> = {}
   let body = markdown
@@ -69,15 +90,6 @@ export function parseProfile(markdown: string, fallbackName: string, source?: st
   }
   for (const key of Object.keys(data))
     if (!KEYS.has(key)) throw new Error(`unsupported profile key: ${key}`)
-  const rawTools = scalarString(data.tools, "tools") ?? "default"
-  const normalizedTools =
-    rawTools === "read,bash"
-      ? "read-only"
-      : rawTools === "read,bash,edit,write"
-        ? "default"
-        : rawTools
-  if (normalizedTools !== "default" && normalizedTools !== "read-only")
-    throw new Error(`unsupported tools policy: ${rawTools}`)
   const thinking = scalarString(data.thinking, "thinking") as ThinkingLevel | undefined
   if (thinking && !THINKING_LEVELS.includes(thinking))
     throw new Error(`invalid thinking level: ${thinking}`)
@@ -94,7 +106,8 @@ export function parseProfile(markdown: string, fallbackName: string, source?: st
     description: scalarString(data.description, "description"),
     model: scalarString(data.model, "model"),
     thinking,
-    tools: normalizedTools,
+    tools: parseTools(data.tools),
+    extensions: parseExtensions(data.extensions),
     loadContext: scalarBoolean(data["load-context"], "load-context", true),
     loadSkills: scalarBoolean(data["load-skills"], "load-skills", true),
     systemPrompt,

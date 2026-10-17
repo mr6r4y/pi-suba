@@ -6,6 +6,7 @@ import {
   type CompletionReport,
   type ThinkingLevel,
 } from "../shared/protocol.ts"
+import { parseToolNames } from "../shared/tools.ts"
 import { ActivityRecorder } from "./activity.ts"
 import { EventWriter } from "./events.ts"
 
@@ -18,6 +19,7 @@ export default function (pi: ExtensionAPI) {
   if (!childId || !artifactDir)
     throw new Error("pi-suba child extension requires SUBA_CHILD_ID and SUBA_ARTIFACT_DIR")
   const automatic = process.env.SUBA_AUTO_COMPLETE !== "0"
+  const requiredToolsJson = process.env.SUBA_REQUIRED_TOOLS
   const activity = new ActivityRecorder(childId, artifactDir)
   const events = new EventWriter(childId, artifactDir)
   let lifecycle: Lifecycle = "running"
@@ -146,7 +148,32 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.on("session_start", async (_event, ctx) => {
-    await events.initialize()
+    try {
+      await events.initialize()
+      if (requiredToolsJson !== undefined) {
+        const required = parseToolNames(JSON.parse(requiredToolsJson), "SUBA_REQUIRED_TOOLS")
+        const registered = new Set(pi.getAllTools().map((tool) => tool.name))
+        const missing = required.filter((name) => !registered.has(name))
+        if (missing.length > 0)
+          throw new Error(`Unregistered required child tools: ${missing.join(", ")}`)
+        const active = new Set(pi.getActiveTools())
+        const inactive = required.filter((name) => !active.has(name))
+        if (inactive.length > 0)
+          throw new Error(`Inactive required child tools: ${inactive.join(", ")}`)
+      }
+    } catch (error) {
+      // A lifecycle guard also aborts any initial task that races orderly shutdown.
+      lifecycle = "terminated"
+      try {
+        await events.failed(
+          `Child tool startup validation failed: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      } finally {
+        await activity.done().catch(() => undefined)
+        ctx.shutdown()
+      }
+      return
+    }
     await activity.update({
       lastRequestContextTokens: latestRequestContextTokens(ctx.sessionManager.getBranch()),
     })

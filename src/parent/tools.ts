@@ -11,7 +11,7 @@ import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { resolveChildExtensionSource, type SubaConfig } from "../shared/config.ts"
 import type { Profile } from "../shared/profiles.ts"
-import { TOOL_POLICIES } from "../shared/profiles.ts"
+import { resolveToolNames } from "../shared/tools.ts"
 import { readActivity, THINKING_LEVELS, type ThinkingLevel } from "../shared/protocol.ts"
 import { countSessionEntries, forkEntries, seedSession } from "../shared/sessions.ts"
 import { createTarget, PartialTmuxTargetError, sendToPane, tmuxExec } from "../shared/tmux.ts"
@@ -140,20 +140,57 @@ export function launchParametersSchema(profiles: ReadonlyMap<string, Profile>) {
   )
 }
 
-function resolveLaunch(
+type LaunchOverrides = { model?: string; thinking?: ThinkingLevel; autoComplete?: boolean }
+type RuntimeLaunch = ResolvedLaunch & { tools: string[]; extensions: string[] }
+
+function resolveExtensions(sources: string[]): string[] {
+  return [...new Set(sources.map((source) => resolveChildExtensionSource(source)))]
+}
+
+export function resolveLaunch(
   config: SubaConfig,
   profile: Profile,
-  overrides: { model?: string; thinking?: ThinkingLevel; autoComplete?: boolean },
-): ResolvedLaunch {
+  overrides: LaunchOverrides = {},
+): RuntimeLaunch {
   return {
     profile: profile.name,
-    tools: profile.tools,
+    tools: resolveToolNames(profile.tools),
+    extensions: resolveExtensions([...config.childExtensions, ...profile.extensions]),
     loadContext: profile.loadContext,
     loadSkills: profile.loadSkills,
     systemPrompt: profile.systemPrompt,
     autoComplete: overrides.autoComplete ?? profile.autoComplete ?? config.autoComplete,
     model: overrides.model ?? profile.model ?? config.model,
     thinking: overrides.thinking ?? profile.thinking ?? config.thinking,
+  }
+}
+
+export function resolveResumeLaunch(
+  config: SubaConfig,
+  stored: ResolvedLaunch,
+  profile: Profile | undefined,
+  overrides: Pick<LaunchOverrides, "model" | "thinking"> = {},
+): RuntimeLaunch {
+  // Older records did not capture wrapper-injected extensions or rewritten tool lists.
+  // Do not silently reinterpret those records using a newly extended profile.
+  if (
+    stored.extensions === undefined &&
+    profile &&
+    (Array.isArray(profile.tools) || profile.extensions.length > 0)
+  ) {
+    throw new Error(
+      `Cannot resume legacy profile "${stored.profile}" without a runtime snapshot after adding explicit tools or extensions. Start a fresh child with this profile.`,
+    )
+  }
+  return {
+    ...stored,
+    tools: resolveToolNames(stored.tools),
+    extensions:
+      stored.extensions === undefined
+        ? resolveExtensions(config.childExtensions)
+        : [...stored.extensions],
+    model: overrides.model ?? stored.model,
+    thinking: overrides.thinking ?? stored.thinking,
   }
 }
 function uniqueId(records: Map<string, ChildRecord>): string {
@@ -286,11 +323,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     if (!profile && !resume)
       throw new Error(`Unknown subagent profile: ${params.profile ?? host.config.defaultProfile}`)
     const resolvedLaunch = resume
-      ? {
-          ...resume.resolvedLaunch,
-          model: params.model ?? resume.resolvedLaunch.model,
-          thinking: params.thinking ?? resume.resolvedLaunch.thinking,
-        }
+      ? resolveResumeLaunch(host.config, resume.resolvedLaunch, profile, params)
       : resolveLaunch(host.config, profile!, params)
     if (resolvedLaunch.model) validateModel(resolvedLaunch.model, ctx)
     const id = resume?.id ?? uniqueId(host.records)
@@ -337,17 +370,14 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
         mode: 0o600,
       })
       const childExtension = fileURLToPath(new URL("../child/index.ts", import.meta.url))
-      const configuredExtensions = host.config.childExtensions.flatMap((source) => [
-        "-e",
-        resolveChildExtensionSource(source),
-      ])
+      const configuredExtensions = resolvedLaunch.extensions.flatMap((source) => ["-e", source])
       const args = [
         "--no-extensions",
         ...configuredExtensions,
         "-e",
         childExtension,
         "--tools",
-        [...TOOL_POLICIES[resolvedLaunch.tools], "suba_done", "suba_notify", "suba_ask"].join(","),
+        resolvedLaunch.tools.join(","),
         "--session",
         sessionFile,
         "--name",
@@ -371,6 +401,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
             SUBA_ARTIFACT_DIR: artifactDir,
             SUBA_AUTO_COMPLETE: resolvedLaunch.autoComplete ? "1" : "0",
             SUBA_SESSION_FILE: sessionFile,
+            SUBA_REQUIRED_TOOLS: JSON.stringify(resolvedLaunch.tools),
           },
           artifactDir,
           cwd,

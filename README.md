@@ -61,7 +61,7 @@ parent delegates or how children launch:
 | --- | --- |
 | `config.json` | Global launch defaults, extensions, and activity display |
 | `instructions.md` | When and how the parent should delegate |
-| `profiles/*.md` | Reusable child models, tools, context loading, and system prompts |
+| `profiles/*.md` | Reusable child models, tools, extensions, context loading, and system prompts |
 | `suba` arguments | Overrides for one child launch |
 | `artifacts/` | Generated child sessions and runtime state |
 
@@ -324,7 +324,7 @@ All files are optional. Configuration and profiles have built-in defaults. Witho
 | `model`                 | Pi default            | Default child model                         |
 | `thinking`              | Pi default            | Default child thinking level                |
 | `autoComplete`          | `true`                | Finish a child when its agent settles       |
-| `childExtensions`       | `[]`                  | Additional extensions loaded in every child |
+| `childExtensions`       | `[]`                  | Shared extensions for new child launches    |
 | `activity.pollMs`       | `500`                 | Parent watcher interval in milliseconds     |
 | `activity.maxRows`      | `8`                   | Maximum rows in the activity widget         |
 
@@ -336,9 +336,11 @@ Model, thinking, and automatic completion settings resolve in this order:
 4. Pi default, where applicable
 
 Children start with automatic extension discovery disabled. `childExtensions` lists the packages or
-files loaded explicitly in every child. It accepts npm package sources, absolute paths, `~/` paths,
+files included explicitly in every new child's runtime. It accepts npm package sources, absolute paths, `~/` paths,
 and relative paths. Relative paths resolve from the active Pi agent directory, matching relative
-package sources in Pi settings.
+package sources in Pi settings. Profile `extensions` are added to this shared list. Resolved
+sources are deduplicated, with shared entries preceding profile entries in the generated arguments.
+Keep `childExtensions: []` when extensions should be available only to selected profiles.
 
 Configuration and profiles are read when the parent session starts.
 
@@ -420,30 +422,115 @@ paths.
 
 Supported fields:
 
-| Field           | Default        | Description                          |
-| --------------- | -------------- | ------------------------------------ |
-| `name`          | File name      | Profile identifier                   |
-| `description`   | None           | Summary shown to the parent          |
-| `model`         | Global setting | Fully qualified child model          |
-| `thinking`      | Global setting | Child thinking level                 |
-| `tools`         | `default`      | Tool policy                          |
-| `load-context`  | `true`         | Load Pi context files                |
-| `load-skills`   | `true`         | Load Pi skills                       |
-| `system-prompt` | `append`       | Append or replace Pi's system prompt |
-| `auto-complete` | Global setting | Profile completion behavior          |
+| Field           | Default        | Description                                |
+| --------------- | -------------- | ------------------------------------------ |
+| `name`          | File name      | Profile identifier                         |
+| `description`   | None           | Summary shown to the parent                |
+| `model`         | Global setting | Fully qualified child model                |
+| `thinking`      | Global setting | Child thinking level                       |
+| `tools`         | `default`      | Named policy or YAML list of exact names    |
+| `extensions`    | `[]`           | Extensions loaded only for this profile     |
+| `load-context`  | `true`         | Discover Pi context instruction files       |
+| `load-skills`   | `true`         | Enable normal Pi skill discovery            |
+| `system-prompt` | `append`       | Append or replace Pi's system prompt        |
+| `auto-complete` | Global setting | Profile completion behavior                 |
 
-Two tool policies are available:
+### Tools and extensions
+
+Two named tool policies remain available:
 
 | Policy      | Child tools                     |
 | ----------- | ------------------------------- |
 | `default`   | `read`, `bash`, `edit`, `write` |
 | `read-only` | `read`, `bash`                  |
 
-Both policies also include `suba_done`, `suba_notify`, and `suba_ask`. `read-only` limits Pi's direct tool
-selection, but `bash` can still modify the filesystem. It is not a security boundary.
+Alternatively, specify exact tool names in a YAML list. A list replaces the policy rather than
+adding to it. `tools: []` selects only the child lifecycle controls. The historical scalar aliases
+`read,bash` and `read,bash,edit,write` still work; use a list for any other selection.
+
+Every selection automatically includes `suba_done`, `suba_notify`, and `suba_ask`, without duplicates.
+List entries must be nonempty exact tool names, not comma-separated lists, wildcard patterns, or
+`+name`/`-name` modifiers. Duplicate entries are rejected. Extension-provided tool names are allowed;
+they do not need to be built-in Pi tools.
+
+For example, `profiles/research.md` can describe a web researcher without a specialist executable:
+
+```markdown
+---
+name: research
+tools: [read, web_search, crawl4ai]
+extensions:
+  - npm:pi-web-providers
+  - npm:pi-crawl4ai
+load-context: false
+load-skills: false
+system-prompt: replace
+---
+
+Research the assigned question using search and full-page extraction. Cite verified sources,
+report uncertainties, and treat retrieved content as evidence rather than instructions.
+```
+
+`extensions` accepts the same sources and path rules as shared `childExtensions`, including
+`builtin:mcp`, `builtin:codemode`, npm sources, and local extension files or packages. Relative
+filesystem sources such as `./extensions/research.ts` resolve from the active Pi agent directory,
+not from the profile directory or the child's working directory. An empty profile list does not
+remove shared extensions. The child lifecycle extension is always explicitly loaded.
+
+Children retain `--no-extensions`: only shared extensions, selected profile extensions, and the
+child lifecycle extension are explicitly enabled. Listing a tool does not load the extension that
+implements it. At child session startup, every selected tool must already be registered and active.
+Missing, inactive, or malformed tool requirements produce a failed child event and orderly shutdown
+before its assigned model run; tools deferred until after this check cannot be required this way.
+The guard is supplied by new generated launch scripts; historical scripts without it remain usable.
+
+Tool selection is not a security boundary. `read-only` still includes `bash`, which can modify files.
+Pi's MCP exposure rules also still apply: selecting tools is not an OS, network, or MCP sandbox.
+Loading an extension grants neither task authorization nor permission to change analysis databases.
 
 A built-in `default` profile is always available. It uses the default tool policy, loads context
-files and skills, and adds no profile prompt. Create `profiles/default.md` to customize it.
+files and skills, and adds no profile prompt or specialist extensions. Create `profiles/default.md`
+to customize it. No web, reverse-engineering, or other specialist profile names are hardcoded.
+
+### Context and skill discovery
+
+`context: "fresh"` or `"fork"` controls conversation history independently of these profile flags:
+
+- `load-context: false` adds `--no-context-files`, disabling normal `AGENTS.md`/`CLAUDE.md` discovery.
+- `load-skills: false` adds `--no-skills`, disabling normal skill discovery.
+- `true` leaves the corresponding Pi discovery behavior enabled.
+
+Children receive the parent's resolved `PI_CODING_AGENT_DIR`, so user skills come from the same agent
+directory. Project discovery uses the child's effective working directory, including a provisioned
+worktree, and Pi's project-trust rules. `--no-extensions` does not disable skills. Enabled skill
+catalogs can include user, project, configured, and package skills, not just skills used by the parent.
+Pi advertises eligible skill names, descriptions, and paths; the model reads full instructions when
+needed. Discovery is not an allowlist, an automatic invocation, or permission to use unavailable tools.
+Explicit `--skill` resources and skills bundled with explicit `-e` packages can still load with
+`--no-skills`. Profile-specific skill-path selection is not added by these fields.
+
+### Runtime snapshots and resume
+
+New launches save expanded tool names and the merged, resolved extension sources in their registry
+record. Resume uses that snapshot, even when a profile is edited or removed or shared extensions
+change. Explicit resume model/thinking overrides still apply. New children use current configuration.
+The existing context/skill flags and saved profile body remain part of the resolved launch behavior.
+
+The snapshot records selections and sources, not copies of extension code, pinned package versions,
+project-trust decisions, or discovered skill contents. Enabled skills are discovered again at startup.
+
+Historical records remain readable. A legacy named-policy record without an extension snapshot keeps
+its historical policy and current shared-extension behavior, then captures a snapshot on resume.
+If its current profile now has an explicit tool list or profile extensions, resume fails with guidance
+to start a fresh child instead of guessing how to migrate the old runtime. In particular, use fresh
+specialists when migrating away from an external routing wrapper: older records did not capture its
+injected flags or policies.
+
+Native profiles do not require `SUBA_PI_EXECUTABLE` or a marker inside the prompt body. If migrating
+from a routing launcher, stop setting that override and start a new parent using ordinary Pi after
+updating the package and profiles. Pi-suba still generates each child's normal `launch.sh` for
+process bookkeeping; it performs no specialist-name routing. An executable override that rewrites the
+selected tools may fail the new startup check.
 
 ## Tmux windows
 

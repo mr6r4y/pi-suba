@@ -2,7 +2,7 @@ import { existsSync } from "node:fs"
 import { isAbsolute, join, relative, sep } from "node:path"
 import { subaDirectory } from "../shared/paths.ts"
 import type { CompletionReport, ChildActivity, ThinkingLevel } from "../shared/protocol.ts"
-import type { AllowedToolPolicy } from "../shared/profiles.ts"
+import type { ToolSelection } from "../shared/tools.ts"
 import type { WorkmuxWorktree } from "../shared/workmux.ts"
 
 export type RegistryState =
@@ -15,7 +15,10 @@ export type RegistryState =
   | "orphaned"
 export interface ResolvedLaunch {
   profile: string
-  tools: AllowedToolPolicy
+  // New launches store expanded names; policy strings remain valid in legacy records.
+  tools: ToolSelection
+  // Undefined identifies a legacy record without a resolved runtime snapshot.
+  extensions?: string[]
   loadContext: boolean
   loadSkills: boolean
   systemPrompt: "append" | "replace"

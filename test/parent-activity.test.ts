@@ -1,5 +1,5 @@
 import { validateToolArguments, type Tool as AiTool } from "@earendil-works/pi-ai"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -149,6 +149,86 @@ async function harness(children: ChildRecord[] = [], hasUI = false) {
 }
 
 describe("parent activity event bus", () => {
+  it("keeps profile runtimes separate and resumes their saved selections", async () => {
+    const suba = join(root, "suba")
+    const profiles = join(suba, "profiles")
+    await mkdir(profiles, { recursive: true })
+    await writeFile(
+      join(suba, "config.json"),
+      JSON.stringify({ childExtensions: ["./extensions/shared.ts"] }),
+    )
+    await writeFile(
+      join(profiles, "research.md"),
+      "---\nname: research\ntools: [read, web_search]\nextensions: [npm:search-package]\nload-context: false\nload-skills: false\nsystem-prompt: replace\n---\nResearch.",
+    )
+    await writeFile(
+      join(profiles, "analysis.md"),
+      "---\nname: analysis\ntools: [read, bash, codemode]\nextensions: [builtin:codemode]\n---\nAnalyze.",
+    )
+    const parent = await harness()
+    await parent.emit("session_start")
+    await parent.execute("suba", { name: "research", profile: "research", task: "research task" })
+    const research = parent.appendEntry.mock.calls.at(-1)![1] as ChildRecord
+    const researchScript = await readFile(join(research.artifactDir, "launch.sh"), "utf8")
+    expect(researchScript).toContain("'--no-extensions'")
+    expect(researchScript).toContain("'-e' 'npm:search-package'")
+    expect(researchScript).toContain("'-e' '" + join(root, "extensions/shared.ts") + "'")
+    expect(researchScript).toContain("'--tools' 'read,web_search,suba_done,suba_notify,suba_ask'")
+    expect(researchScript).toContain("'--no-context-files'")
+    expect(researchScript).toContain("'--no-skills'")
+    expect(researchScript).toContain("'--system-prompt'")
+    expect(researchScript).toContain(
+      `export SUBA_REQUIRED_TOOLS='${JSON.stringify(research.resolvedLaunch.tools)}'`,
+    )
+    expect(researchScript).not.toContain("builtin:codemode")
+    expect(research.resolvedLaunch.extensions).toEqual([
+      join(root, "extensions/shared.ts"),
+      "npm:search-package",
+    ])
+
+    await parent.execute("suba", { name: "analysis", profile: "analysis", task: "analysis task" })
+    const analysis = parent.appendEntry.mock.calls.at(-1)![1] as ChildRecord
+    const analysisScript = await readFile(join(analysis.artifactDir, "launch.sh"), "utf8")
+    expect(analysisScript).toContain("'-e' 'builtin:codemode'")
+    expect(analysisScript).toContain(
+      "'--tools' 'read,bash,codemode,suba_done,suba_notify,suba_ask'",
+    )
+    expect(analysisScript).not.toContain("npm:search-package")
+    expect(analysisScript).not.toContain("'--no-context-files'")
+    expect(analysisScript).not.toContain("'--no-skills'")
+
+    await parent.execute("suba", { name: "ordinary", task: "ordinary task" })
+    const ordinary = parent.appendEntry.mock.calls.at(-1)![1] as ChildRecord
+    const ordinaryScript = await readFile(join(ordinary.artifactDir, "launch.sh"), "utf8")
+    expect(ordinaryScript).toContain(
+      "'--tools' 'read,bash,edit,write,suba_done,suba_notify,suba_ask'",
+    )
+    expect(ordinaryScript).not.toContain("npm:search-package")
+    expect(ordinaryScript).not.toContain("builtin:codemode")
+    expect(ordinary.resolvedLaunch.extensions).toEqual([join(root, "extensions/shared.ts")])
+
+    // Reload the parent with changed global and profile settings, not just another task.
+    await writeFile(
+      join(suba, "config.json"),
+      JSON.stringify({ childExtensions: ["npm:new-global"] }),
+    )
+    await writeFile(
+      join(profiles, "research.md"),
+      "---\nname: research\ntools: [write]\nextensions: [npm:new-profile]\n---\nChanged prompt.",
+    )
+    const restored = await harness([{ ...research, state: "completed" }])
+    await restored.emit("session_start")
+    await restored.execute("suba_resume", { id: research.id, task: "continue research" })
+    const resumed = restored.appendEntry.mock.calls.at(-1)![1] as ChildRecord
+    expect(resumed.resolvedLaunch).toEqual(research.resolvedLaunch)
+    const resumedScript = await readFile(join(resumed.artifactDir, "launch.sh"), "utf8")
+    expect(resumedScript).toContain("'-e' 'npm:search-package'")
+    expect(resumedScript).toContain("'--no-skills'")
+    expect(resumedScript).not.toContain("npm:new-global")
+    expect(resumedScript).not.toContain("npm:new-profile")
+    expect(await readFile(join(resumed.artifactDir, "profile.md"), "utf8")).toBe("Research.")
+  })
+
   it.each(["window", "shared-window"])(
     "resumes historical %s records at the current parent pane",
     async (type) => {

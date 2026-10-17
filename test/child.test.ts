@@ -12,9 +12,10 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import childExtension from "../src/child/index.ts"
 import { readActivity, readEvents } from "../src/shared/protocol.ts"
+import { resolveToolNames } from "../src/shared/tools.ts"
 
 type Handler = (event: unknown, ctx: ExtensionContext) => Promise<void> | void
 type RegisteredTool = {
@@ -30,7 +31,12 @@ type RegisteredTool = {
 const originalChildId = process.env.SUBA_CHILD_ID
 const originalArtifactDir = process.env.SUBA_ARTIFACT_DIR
 const originalAutoComplete = process.env.SUBA_AUTO_COMPLETE
+const originalRequiredTools = process.env.SUBA_REQUIRED_TOOLS
 const temporaryDirectories: string[] = []
+
+beforeEach(() => {
+  delete process.env.SUBA_REQUIRED_TOOLS
+})
 
 afterEach(async () => {
   if (originalChildId === undefined) delete process.env.SUBA_CHILD_ID
@@ -39,9 +45,132 @@ afterEach(async () => {
   else process.env.SUBA_ARTIFACT_DIR = originalArtifactDir
   if (originalAutoComplete === undefined) delete process.env.SUBA_AUTO_COMPLETE
   else process.env.SUBA_AUTO_COMPLETE = originalAutoComplete
+  if (originalRequiredTools === undefined) delete process.env.SUBA_REQUIRED_TOOLS
+  else process.env.SUBA_REQUIRED_TOOLS = originalRequiredTools
   await Promise.all(
     temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
   )
+})
+
+describe("child tool startup", () => {
+  async function start(
+    required: string | undefined,
+    available = ["read", "web_search"],
+    active = available,
+  ) {
+    const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-required-tools-"))
+    temporaryDirectories.push(artifactDir)
+    process.env.SUBA_CHILD_ID = "startup"
+    process.env.SUBA_ARTIFACT_DIR = artifactDir
+    if (required !== undefined) process.env.SUBA_REQUIRED_TOOLS = required
+    const handlers = new Map<string, Handler>()
+    const controls: string[] = []
+    childExtension({
+      registerTool(tool: { name: string }) {
+        controls.push(tool.name)
+      },
+      getAllTools: () => [...available, ...controls].map((name) => ({ name })),
+      getActiveTools: () => [...active, ...controls],
+      on(name: string, handler: Handler) {
+        handlers.set(name, handler)
+      },
+    } as unknown as ExtensionAPI)
+    const shutdown = vi.fn()
+    const abort = vi.fn()
+    const ctx = {
+      hasPendingMessages: () => false,
+      sessionManager: { getBranch: () => [] },
+      thinkingLevel: "off",
+      shutdown,
+      abort,
+    } as unknown as ExtensionContext
+    const emit = (name: string) => handlers.get(name)!({}, ctx)
+    await emit("session_start")
+    return { artifactDir, shutdown, abort, emit }
+  }
+
+  it("accepts registered and active tools including lifecycle controls", async () => {
+    const child = await start(JSON.stringify(resolveToolNames(["read", "web_search"])))
+    expect(child.shutdown).not.toHaveBeenCalled()
+    expect(await readEvents(child.artifactDir, 0)).toEqual([])
+    expect((await readActivity(join(child.artifactDir, "activity.json"), "startup")).state).toBe(
+      "starting",
+    )
+  })
+
+  it("allows controls-only selections", async () => {
+    const child = await start(JSON.stringify(resolveToolNames([])), [], [])
+    expect(child.shutdown).not.toHaveBeenCalled()
+    expect(await readEvents(child.artifactDir, 0)).toEqual([])
+  })
+
+  it.each([
+    { available: ["read"], active: ["read"], error: "Unregistered required child tools: web_search" },
+    {
+      available: ["read", "web_search"],
+      active: ["read"],
+      error: "Inactive required child tools: web_search",
+    },
+  ])("fails before a model run when $error", async ({ available, active, error }) => {
+    const child = await start(
+      JSON.stringify(resolveToolNames(["read", "web_search"])),
+      available,
+      active,
+    )
+    expect(await readEvents(child.artifactDir, 0)).toMatchObject([
+      { type: "failed", error: `Child tool startup validation failed: ${error}` },
+    ])
+    expect(child.shutdown).toHaveBeenCalledTimes(1)
+    expect((await readActivity(join(child.artifactDir, "activity.json"), "startup")).state).toBe(
+      "done",
+    )
+    await child.emit("agent_start")
+    expect(child.abort).toHaveBeenCalledTimes(1)
+    await child.emit("agent_settled")
+    expect((await readEvents(child.artifactDir, 0)).length).toBe(1)
+  })
+
+  it.each(["invalid-json", "{}", '["read", "read"]', '["*"]'])(
+    "reports malformed startup requirements without continuing: %s",
+    async (required) => {
+      const child = await start(required)
+      expect(await readEvents(child.artifactDir, 0)).toMatchObject([
+        { type: "failed", error: expect.stringContaining("Child tool startup validation failed:") },
+      ])
+      expect(child.shutdown).toHaveBeenCalledTimes(1)
+      await child.emit("agent_start")
+      expect(child.abort).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it("stops even when startup failure cannot be written to the event directory", async () => {
+    const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-startup-io-"))
+    temporaryDirectories.push(artifactDir)
+    process.env.SUBA_CHILD_ID = "startup-io"
+    process.env.SUBA_ARTIFACT_DIR = artifactDir
+    process.env.SUBA_REQUIRED_TOOLS = JSON.stringify(["read"])
+    await writeFile(join(artifactDir, "events"), "not a directory")
+    const handlers = new Map<string, Handler>()
+    childExtension({
+      registerTool() {},
+      on(name: string, handler: Handler) {
+        handlers.set(name, handler)
+      },
+    } as unknown as ExtensionAPI)
+    const shutdown = vi.fn()
+    const abort = vi.fn()
+    const ctx = { shutdown, abort } as unknown as ExtensionContext
+    await expect(handlers.get("session_start")!({}, ctx)).rejects.toThrow()
+    expect(shutdown).toHaveBeenCalledTimes(1)
+    await handlers.get("agent_start")!({}, ctx)
+    expect(abort).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not impose a new requirement on historical launch scripts", async () => {
+    const child = await start(undefined, [], [])
+    expect(child.shutdown).not.toHaveBeenCalled()
+    expect(await readEvents(child.artifactDir, 0)).toEqual([])
+  })
 })
 
 describe("child completion", () => {
