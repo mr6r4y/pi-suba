@@ -5,10 +5,10 @@ stable child ID shown by the parent.
 
 ## Deterministic orchestration
 
-### Fresh split completion
+### Fresh window completion
 
 ```text
-Call suba exactly once with name "fresh", task "[fake:complete] fresh split", context "fresh". Do not call suba_list.
+Call suba exactly once with name "fresh", task "[fake:complete] fresh window", context "fresh". Do not call suba_list.
 ```
 
 ### Fork completion
@@ -22,14 +22,15 @@ Call suba exactly once with name "fork", task "[fake:complete] fork context", co
 Inspect the child session to confirm that conversation entries before the
 triggering user turn exist and the triggering turn does not.
 
-### Concurrent splits
+### Concurrent windows
 
 ```text
-Launch three subagents named "split-one", "split-two", and "split-three", each with task "[fake:stay] concurrent split". Return after all three launches.
+Launch three subagents named "window-one", "window-two", and "window-three", each with task "[fake:stay] concurrent window". Return after all three launches.
 ```
 
-Verify all three children share the parent's window and stack beside it. No new
-window should appear.
+Verify all three children have distinct windows in the parent's session. Each child
+window should contain one pane. The parent's active window, pane, and layout must
+remain unchanged.
 
 ### Ping and single-line guidance
 
@@ -79,14 +80,15 @@ interrupted child.
 Launch a subagent named "resume" with task "[fake:complete] first result" and wait for its result.
 ```
 
-Move the parent pane to another tmux window, then:
+Move the parent pane to another tmux window or session, then:
 
 ```text
 Call suba_resume for <id> with task "[fake:complete] appended result".
 ```
 
-The resumed child must split in the parent's current window, not its previous
-window. The resumed result must contain the appended result and exclude the first one.
+The resumed child must get a fresh detached window in the parent's current session,
+not the parent's window or its previous child window. The resumed result must contain
+the appended result and exclude the first one.
 
 ### Activity overflow
 

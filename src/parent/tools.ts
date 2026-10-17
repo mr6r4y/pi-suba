@@ -97,7 +97,7 @@ export async function finishChild(
 
 export function launchToolDescription(profiles: ReadonlyMap<string, Profile>): string {
   const base =
-    "Launch an interactive Pi subagent in a split in the parent's current tmux window. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ask rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. After a success report, verify integration and call suba_finish with a verified result summary before approving the next merge. Leave blocked children open and send guidance. Workmux cleans up the worktree, not the separately managed child pane. Results and help requests automatically start another parent turn; progress updates do not. Never wait with sleep or repeated status checks."
+    "Launch an interactive Pi subagent in its own detached tmux window in the parent's current session. Worktree provisioning completes before target creation. Use worktree: true for children modifying code in parallel with the parent or other children; omit it for read-only tasks. For worktree integration, ensure the child has skills enabled and the merge skill available, set autoComplete: false, and instruct it to request merge approval with suba_ask rather than finish with suba_done. Authorize merges one at a time by sending /skill:merge via suba_send with these instructions appended after a space, not a newline, in the same message: After merging, use suba_ask to report success or a blocker, then wait. Do not call suba_done; the parent will verify integration and finish the session. After a success report, verify integration and call suba_finish with a verified result summary before approving the next merge. Leave blocked children open and send guidance. Workmux cleans up the worktree, not the separately managed child pane. Results and help requests automatically start another parent turn; progress updates do not. Never wait with sleep or repeated status checks."
   if (profiles.size <= 1) return base
   return `${base} Available profiles: ${[...profiles.keys()].join(", ")}. Omit profile to use the configured default.`
 }
@@ -579,7 +579,7 @@ export function registerTools(pi: ExtensionAPI, host: ManagerHost): void {
     name: "suba_resume",
     label: "Suba Resume",
     description:
-      "Resume a completed or exited subagent thread in a split in the parent's current tmux window.",
+      "Resume a completed or exited subagent thread in a new detached tmux window in the parent's current session.",
     parameters: Type.Object(
       {
         id: Type.String(),

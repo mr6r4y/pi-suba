@@ -3,9 +3,10 @@
 `pi-suba` is my spin on subagents in [Pi](https://pi.dev): delegated Pi sessions running visibly
 in tmux.
 
-Each subagent opens in a split in the parent's current tmux window, so you can watch it work,
-inspect its output, and type into its session. Launches return after target creation without
-waiting for the child result. Results and help requests arrive asynchronously in the parent session.
+Each subagent opens in its own detached tmux window in the parent's current session, so you can
+switch to it to watch it work, inspect its output, and type into its session. Launches return after
+target creation without waiting for the child result. Results and help requests arrive asynchronously
+in the parent session.
 
 ## Why pi-suba?
 
@@ -444,19 +445,25 @@ selection, but `bash` can still modify the filesystem. It is not a security boun
 A built-in `default` profile is always available. It uses the default tool policy, loads context
 files and skills, and adds no profile prompt. Create `profiles/default.md` to customize it.
 
-## Tmux splits
+## Tmux windows
 
-Launch and resume always create a split in the parent's current tmux window. The first
-child opens beside the parent; additional children stack below it with equal heights.
-Only panes owned by that parent are grouped. There is no placement argument or setting.
-Launch and resume schemas reject obsolete placement arguments; remove them from saved
-launch recipes.
+Each launch and resume creates a new detached window in the parent's current tmux
+session. The parent's active window, pane, and layout are left unchanged. Concurrent
+children receive separate windows rather than sharing or splitting the parent's window.
+Switch windows with your normal tmux bindings to inspect or interact with a child.
 
-Legacy `placement` and `sharedWindowName` config keys are accepted but ignored and can
-be removed. Stored child `placement` and `windowId` fields are discarded on restoration.
-Existing live children stay in their panes and remain watchable, reachable, and finishable.
-Resuming uses the current parent pane, never a historical child window. Historical tool
-results remain readable without displaying obsolete placement metadata.
+The session is resolved from the current parent pane for every launch, including after
+moving the parent to another session. Pi-suba still tracks the child's stable pane ID,
+so guidance, activity tracking, and finishing work across windows. A failed target setup
+removes only the newly created child pane, not another window's panes.
+
+There is no placement argument or setting. Launch and resume schemas reject obsolete
+placement arguments; remove them from saved launch recipes. Legacy `placement` and
+`sharedWindowName` config keys are accepted but ignored and can be removed. Stored child
+`placement` and `windowId` fields are discarded on restoration. Existing live children
+stay in their current panes and remain watchable, reachable, and finishable. Resuming
+creates a fresh window, never reuses a historical child window, and preserves the saved
+child session. Historical results remain readable without obsolete placement metadata.
 
 ## Activity, completion, and resume
 

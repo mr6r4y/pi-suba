@@ -101,8 +101,8 @@ canonical fixture set.
 The Cua run covers:
 
 - Fresh, forked, and resumed persistent sessions
-- Same-parent-window splits, including concurrent launches and resume
-- Stable pane IDs, rebalancing, focus-independent targeting, and pane closure
+- Separate detached child windows in the parent's session, including concurrent launches and resume
+- Stable pane IDs, preserved parent layout/focus, cross-session targeting, and pane closure
 - Single-line and multiline guidance
 - Automatic completion, explicit completion, ping, structured failure, process
   failure, and interruption

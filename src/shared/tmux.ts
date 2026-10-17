@@ -26,52 +26,6 @@ export const tmuxExec: TmuxExec = async (args, input) => {
   })
 }
 
-let splitQueue = Promise.resolve()
-
-async function withQueue<T>(action: () => Promise<T>): Promise<T> {
-  const previous = splitQueue
-  let release = () => {}
-  const next = new Promise<void>((resolve) => {
-    release = resolve
-  })
-  splitQueue = next
-  await previous
-  try {
-    return await action()
-  } finally {
-    release()
-  }
-}
-
-async function equalizeSplitHeights(
-  windowId: string,
-  parentPane: string,
-  run: TmuxExec,
-): Promise<void> {
-  const panes = await run([
-    "list-panes",
-    "-t",
-    windowId,
-    "-F",
-    "#{pane_id}\t#{pane_top}\t#{pane_height}\t#{@suba-parent-pane}",
-  ])
-  const children = panes
-    .split("\n")
-    .flatMap((line) => {
-      const [paneId, top, height, owner] = line.split("\t")
-      return paneId && owner === parentPane
-        ? [{ paneId, top: Number(top), height: Number(height) }]
-        : []
-    })
-    .sort((left, right) => left.top - right.top)
-  if (children.length < 2) return
-  const height = Math.floor(
-    children.reduce((total, child) => total + child.height, 0) / children.length,
-  )
-  for (const child of children.slice(0, -1))
-    await run(["resize-pane", "-t", child.paneId, "-y", String(height)])
-}
-
 export class PartialTmuxTargetError extends AggregateError {
   readonly paneId: string
 
@@ -104,42 +58,24 @@ export async function createTarget(
   command: string,
   run = tmuxExec,
 ): Promise<TmuxTarget> {
-  return withQueue(async () => {
-    const windowId = await run(["display-message", "-p", "-t", parentPane, "#{window_id}"])
-    const panes = await run([
-      "list-panes",
-      "-t",
-      windowId,
-      "-F",
-      "#{pane_id}\t#{pane_top}\t#{@suba-parent-pane}",
-    ])
-    const children = panes.split("\n").flatMap((line) => {
-      const [paneId, top, owner] = line.split("\t")
-      return paneId && owner === parentPane ? [{ paneId, top: Number(top) }] : []
-    })
-    const bottom = children.reduce<{ paneId: string; top: number } | undefined>(
-      (candidate, pane) => (!candidate || pane.top > candidate.top ? pane : candidate),
-      undefined,
-    )
-    const paneId = await run([
-      "split-window",
-      bottom ? "-v" : "-h",
-      "-d",
-      "-P",
-      "-F",
-      "#{pane_id}",
-      "-t",
-      bottom?.paneId ?? parentPane,
-      command,
-    ])
-    try {
-      await run(["set-option", "-p", "-t", paneId, "@suba-parent-pane", parentPane])
-      await equalizeSplitHeights(windowId, parentPane, run)
-      return { paneId }
-    } catch (error) {
-      return rollbackTargetPane(paneId, error, run)
-    }
-  })
+  // Resolve on every launch/resume: the parent may have moved to another session.
+  const sessionId = await run(["display-message", "-p", "-t", parentPane, "#{session_id}"])
+  const paneId = await run([
+    "new-window",
+    "-d", // Keep the parent's active window and pane unchanged.
+    "-P",
+    "-F",
+    "#{pane_id}",
+    "-t",
+    `${sessionId}:`, // Let tmux allocate a free index, including concurrent launches.
+    command,
+  ])
+  try {
+    await run(["set-option", "-p", "-t", paneId, "@suba-parent-pane", parentPane])
+    return { paneId }
+  } catch (error) {
+    return rollbackTargetPane(paneId, error, run)
+  }
 }
 
 export async function paneExists(paneId: string, run = tmuxExec): Promise<boolean> {
