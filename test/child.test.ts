@@ -105,7 +105,11 @@ describe("child tool startup", () => {
   })
 
   it.each([
-    { available: ["read"], active: ["read"], error: "Unregistered required child tools: web_search" },
+    {
+      available: ["read"],
+      active: ["read"],
+      error: "Unregistered required child tools: web_search",
+    },
     {
       available: ["read", "web_search"],
       active: ["read"],
@@ -174,6 +178,30 @@ describe("child tool startup", () => {
 })
 
 describe("child completion", () => {
+  it("keeps completion report strings unconstrained in the model-facing schema", async () => {
+    const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-completion-schema-"))
+    temporaryDirectories.push(artifactDir)
+    process.env.SUBA_CHILD_ID = "schema"
+    process.env.SUBA_ARTIFACT_DIR = artifactDir
+    const tools = new Map<string, ToolDefinition>()
+    childExtension({
+      registerTool(tool: ToolDefinition) {
+        tools.set(tool.name, tool)
+      },
+      on() {},
+    } as unknown as ExtensionAPI)
+
+    const schema = tools.get("suba_done")!.parameters
+    expect(schema).toHaveProperty("type", "object")
+    expect(schema).toHaveProperty("required", ["summary"])
+    expect(schema).toHaveProperty("properties.artifacts.type", "array")
+    for (const path of ["properties.summary", "properties.artifacts.items"]) {
+      expect(schema).toHaveProperty(`${path}.type`, "string")
+      expect(schema).not.toHaveProperty(`${path}.pattern`)
+      expect(schema).not.toHaveProperty(`${path}.minLength`)
+    }
+  })
+
   it.each(["steer", "followUp"] as const)(
     "delivers a corrected report through the real agent %s queue",
     async (queue) => {
@@ -375,7 +403,7 @@ describe("child completion", () => {
   })
 
   it.each([
-    { summary: "  Exact report.\n\nSecond paragraph.  " },
+    { summary: "  Exact report.\n\nSecond paragraph — verified ✓.  " },
     { summary: "Report", artifacts: ["missing/evidence.md", "/tmp/report file.md"] },
   ])("persists explicit completion without preceding prose: %j", async (report) => {
     const artifactDir = await mkdtemp(join(tmpdir(), "pi-suba-explicit-"))
@@ -411,7 +439,11 @@ describe("child completion", () => {
       { summary: "" },
       { summary: " \n\t" },
       { summary: 42 },
+      { summary: null },
       { summary: "ok", artifacts: [""] },
+      { summary: "ok", artifacts: [" \n\t"] },
+      { summary: "ok", artifacts: [42] },
+      { summary: "ok", artifacts: [null] },
       { summary: "ok", artifacts: "path" },
     ]) {
       await expect(execute(invalid)).rejects.toThrow(/suba_done/)

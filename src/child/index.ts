@@ -72,14 +72,14 @@ export default function (pi: ExtensionAPI) {
     label: "Suba Done",
     description:
       "Submit a final nonempty summary and optional artifact references without preceding prose. Completion waits for queued guidance; if guidance arrives, address it and submit an updated report. Artifacts are not read or executed; completion does not mean parent acceptance.",
+    // Keep free-form strings unconstrained for provider compatibility.
+    // validateCompletionReport enforces nonblank values before recording.
     parameters: Type.Object({
       summary: Type.String({
-        minLength: 1,
-        pattern: "\\S",
         description: "Final report delivered verbatim to the parent",
       }),
       artifacts: Type.Optional(
-        Type.Array(Type.String({ minLength: 1, pattern: "\\S" }), {
+        Type.Array(Type.String(), {
           description:
             "Artifact path references, relative to the child working directory or absolute. Contents are not ingested.",
         }),
